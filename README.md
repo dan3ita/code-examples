@@ -1,3 +1,5 @@
 # code-examples
 React-TypeScript programming work done
-- Includes interface programming, styling, component and unit tests
+Includes:
+- Client development, styling, component and unit tests
+- API code setup for AWS Kinesis
