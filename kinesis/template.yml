@@ -1,0 +1,1791 @@
+# This is the SAM template that represents the architecture of your serverless application
+# https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/serverless-sam-template-basics.html
+
+# The AWSTemplateFormatVersion identifies the capabilities of the template
+# https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/format-version-structure.html
+AWSTemplateFormatVersion: 2010-09-09
+Description: >-
+  bootworks-api
+
+# Transform section specifies one or more macros that AWS CloudFormation uses to process your template
+# https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/transform-section-structure.html
+Transform:
+  - AWS::Serverless-2016-10-31
+  - Name: DatadogServerless
+    Parameters:
+      stackName: !Ref "AWS::StackName"
+      nodeLayerVersion: "51"
+
+
+# Parameters
+# https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/parameters-section-structure.html
+Parameters:
+  StageName:
+    Type: String
+  ConcurrencyUpdateDeliveries:
+    Type: String
+  ConcurrencyHigh:
+    Type: String
+  ConcurrencyLow:
+    Type: String
+  DbUser:
+    Type: String
+  DbPassword:
+    Type: String
+  DbUrl:
+    Type: String
+  DbName:
+    Type: String
+  TestUserContextPath:
+    Type: String
+  SecurityGroupIds:
+    Type: String
+  SubnetIds:
+    Type: String
+  SSLCAAbsPath:
+    Type: String
+  HostedZoneId:
+    Type: String
+  CertificateArn:
+    Type: String
+  BwCarrierLookupFn:
+    Type: String
+  PhotoS3Bucket:
+    Type: String
+  PhotoS3Prefix:
+    Type: String
+  SlackSecrets:
+    Type: String
+  TundraProdSecrets:
+    Type: String
+  TundraTestSecrets:
+    Type: String
+  TundraUrlOverride:
+    Type: String
+  TundraWsdlFileAbsPath:
+    Type: String
+  DatadogForwarderArn:
+    Type: String
+  S3PartnerBucketName:
+    Type: String
+  RouteServiceSecrets:
+    Type: String
+  DeliveryStreamName:
+    Type: String
+  LocationEventStreamName:
+    Type: String
+
+Globals:
+  Function:
+    Runtime: nodejs14.x
+    MemorySize: 384
+    Timeout: 60
+    VpcConfig:
+      SecurityGroupIds: !Split [",", !Ref SecurityGroupIds]
+      SubnetIds: !Split [",", !Ref SubnetIds]
+    Tracing: Active
+    Layers:
+      - !Sub "arn:aws:lambda:${AWS::Region}:580247275435:layer:LambdaInsightsExtension:14"
+    AutoPublishAlias: !Ref StageName
+    DeploymentPreference:
+        Type: AllAtOnce
+    Tags:
+      env: !Ref StageName
+      environment: !Ref StageName
+      service: "bootworks"
+    Environment:
+      Variables:
+        SERVICE_ENV: !Ref StageName
+        DD_ENV: !Ref StageName
+        DD_SERVICE: "bootworks"
+        DD_MERGE_XRAY_TRACES: "true"
+        DD_TRACE_ENABLED: "true"
+        DB_USER: !Ref DbUser
+        DB_PASSWORD: !Ref DbPassword
+        DB_NAME: !Ref DbName
+        DB_URL: !Ref DbUrl
+        TEST_USER_CONTEXT_PATH: !Ref TestUserContextPath
+        SSL_CA_ABS_PATH: !Ref SSLCAAbsPath
+        AWS_XRAY_CONTEXT_MISSING: "LOG_ERROR"
+        AWS_NODEJS_CONNECTION_REUSE_ENABLED: 1
+        PHOTO_S3_BUCKET: !Ref PhotoS3Bucket
+        PHOTO_S3_PREFIX: !Ref PhotoS3Prefix
+        SLACK_SECRETS: !Ref SlackSecrets
+        TUNDRA_PROD_SECRETS: !Ref TundraProdSecrets
+        TUNDRA_TEST_SECRETS: !Ref TundraTestSecrets
+        TUNDRA_URL_OVERRIDE: !Ref TundraUrlOverride
+        TUNDRA_WSDL_FILE_ABS_PATH: !Ref TundraWsdlFileAbsPath
+        SCAN_EVENT_QUEUE_NAME: !Sub "bw-scan-events-${StageName}.fifo"
+        NOTIFICATION_QUEUE_NAME: !Sub "bw-notifications-${StageName}.fifo"
+        CREATE_SCHEDULED_PICKUPS_QUEUE_NAME: !Sub "bw-create-scheduled-pickups-${StageName}.fifo"
+        CANCEL_SCHEDULED_PICKUPS_QUEUE_NAME: !Sub "bw-cancel-scheduled-pickups-${StageName}.fifo"
+        CHECK_SCHEDULED_PICKUPS_QUEUE_NAME: !Sub "bw-check-scheduled-pickups-${StageName}.fifo"
+        PROCESS_SCHEDULED_PICKUPS_QUEUE_NAME: !Sub "bw-process-scheduled-pickups-${StageName}.fifo"
+        CLEAN_VENUE_ENV_QUEUE_NAME: !Sub "bw-clean-venue-env-${StageName}.fifo"
+        S3_PARTNER_BUCKET_NAME: !Ref S3PartnerBucketName
+        ROUTE_SERVICE_SECRETS: !Ref RouteServiceSecrets
+        DELIVERY_STREAM_NAME: !Ref DeliveryStreamName
+        LOCATION_EVENT_STREAM_NAME: !Ref LocationEventStreamName
+
+# Conditions primarily handle determining whether a resource needs to be created based on environment
+# https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/conditions-section-structure.html
+Conditions:
+  CreateDevResources: !Or [!Equals [!Ref StageName, local], !Equals [!Ref StageName, dev]]
+
+# Resources declares the AWS resources that you want to include in the stack
+# https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/resources-section-structure.html
+Resources:
+
+  #
+  # SQS
+  #
+
+  # Message queue for scan events we need to process
+  bwScanEventsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      ContentBasedDeduplication: true
+      FifoQueue: true
+      KmsMasterKeyId: alias/bw-sqs
+      QueueName: !Sub "bw-scan-events-${StageName}.fifo"
+
+
+  # Dumb message queue for notification messages
+  bwNotificationsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      ContentBasedDeduplication: true
+      FifoQueue: true
+      KmsMasterKeyId: alias/bw-sqs
+      QueueName: !Sub "bw-notifications-${StageName}.fifo"
+
+  # Message queue to drive creation of scheduled pickup tasks
+  bwCreateScheduledPickupsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      ContentBasedDeduplication: true
+      FifoQueue: true
+      KmsMasterKeyId: alias/bw-sqs
+      QueueName: !Sub "bw-create-scheduled-pickups-${StageName}.fifo"
+
+  # Message queue to drive cancellation of scheduled pickup tasks
+  bwCancelScheduledPickupsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      ContentBasedDeduplication: true
+      FifoQueue: true
+      KmsMasterKeyId: alias/bw-sqs
+      QueueName: !Sub "bw-cancel-scheduled-pickups-${StageName}.fifo"
+
+  # Message queue to drive checking for new scheduled-pickup tenants
+  bwCheckScheduledPickupsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      ContentBasedDeduplication: true
+      FifoQueue: true
+      KmsMasterKeyId: alias/bw-sqs
+      QueueName: !Sub "bw-check-scheduled-pickups-${StageName}.fifo"
+
+  # Message queue to drive processing new scheduled-pickup tenants
+  bwProcessScheduledPickupsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      ContentBasedDeduplication: true
+      FifoQueue: true
+      KmsMasterKeyId: alias/bw-sqs
+      QueueName: !Sub "bw-process-scheduled-pickups-${StageName}.fifo"
+
+  # Message queue to drive removal of deliveries/tasks/history for non-ACTIVE venues
+  bwCleanVenueEnvQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      ContentBasedDeduplication: true
+      FifoQueue: true
+      KmsMasterKeyId: alias/bw-sqs
+      QueueName: !Sub "bw-clean-venue-env-${StageName}.fifo"
+
+  #
+  # Event-driven Lambdas
+  #
+
+  bwHandleScanEvents:
+    Type: AWS::Serverless::Function
+    Properties:
+      Timeout: 15
+      MemorySize: 1024
+      FunctionName: !Sub "bw-handle-scan-events-${StageName}"
+      Role: arn:aws:iam::552520131273:role/bw-exec
+      CodeUri: ./
+      Handler: ./dist/lambda/handleScanEvents.handleScanEventsFn
+      Description: Consumer of the ScanEventQueue and determines whether a notification should be sent
+      Events:
+        ScanEventsSQS:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt bwScanEventsQueue.Arn
+            BatchSize: 10 # Max records per poll
+
+  bwHandleNotifications:
+    Type: AWS::Serverless::Function
+    Properties:
+      Timeout: 15
+      FunctionName: !Sub "bw-handle-notifications-${StageName}"
+      Role: arn:aws:iam::552520131273:role/bw-exec
+      CodeUri: ./
+      Handler: ./dist/lambda/handleNotifications.handleNotificationsFn
+      Description: Consumer of NotificationsQueue and sends notifications to appropriate channels
+      Events:
+        NotificationsSQS:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt bwNotificationsQueue.Arn
+            BatchSize: 10 # Max records per poll
+
+  bwHandleCreateScheduledPickups:
+    Type: AWS::Serverless::Function
+    Properties:
+      Timeout: 15 # This needs to be <= to the visibility timeout period on the queue
+      FunctionName: !Sub "bw-handle-create-scheduled-pickups-${StageName}"
+      Role: arn:aws:iam::552520131273:role/bw-exec
+      CodeUri: ./
+      Handler: ./dist/lambda/handleCreateScheduledPickups.handleCreateScheduledPickupsFn
+      Description: Consumer of CreateScheduledPickupsQueue; creates ScheduledPickupTasks for tenants that need them.
+      Events:
+        NotificationsSQS:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt bwCreateScheduledPickupsQueue.Arn
+            BatchSize: 10 # Max records per poll
+
+  bwHandleCancelScheduledPickups:
+    Type: AWS::Serverless::Function
+    Properties:
+      Timeout: 15 # This needs to be <= to the visibility timeout period on the queue
+      FunctionName: !Sub "bw-handle-cancel-scheduled-pickups-${StageName}"
+      Role: arn:aws:iam::552520131273:role/bw-exec
+      CodeUri: ./
+      Handler: ./dist/lambda/handleCancelScheduledPickups.handleCancelScheduledPickupsFn
+      Description: Consumer of CancelScheduledPickupsQueue; cancels expired ScheduledPickupTasks.
+      Events:
+        NotificationsSQS:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt bwCancelScheduledPickupsQueue.Arn
+            BatchSize: 10 # Max records per poll
+
+  bwHandleCheckScheduledPickups:
+    Type: AWS::Serverless::Function
+    Properties:
+      Timeout: 15 # This needs to be <= to the visibility timeout period on the queue
+      FunctionName: !Sub "bw-handle-check-scheduled-pickups-${StageName}"
+      Role: arn:aws:iam::552520131273:role/bw-exec
+      CodeUri: ./
+      Handler: ./dist/lambda/handleCheckScheduledPickups.handleCheckScheduledPickupsFn
+      Description: Consumer of CheckScheduledPickupsQueue; asks carrier integrations for new scheduled-pickup tenants
+      Events:
+        NotificationsSQS:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt bwCheckScheduledPickupsQueue.Arn
+            BatchSize: 10 # Max records per poll
+
+  bwHandleProcessScheduledPickups:
+    Type: AWS::Serverless::Function
+    Properties:
+      Timeout: 15 # This needs to be <= to the visibility timeout period on the queue
+      FunctionName: !Sub "bw-handle-process-scheduled-pickups-${StageName}"
+      Role: arn:aws:iam::552520131273:role/bw-exec
+      CodeUri: ./
+      Handler: ./dist/lambda/handleProcessScheduledPickups.handleProcessScheduledPickupsFn
+      Description: Consumer of ProcessScheduledPickupsQueue; handles new scheduled pickup customers from integration
+      Events:
+        NotificationsSQS:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt bwProcessScheduledPickupsQueue.Arn
+            BatchSize: 1 # Max records per poll
+
+  bwHandleCleanVenueEnvRequests:
+    Type: AWS::Serverless::Function
+    Properties:
+      Timeout: 15 # This needs to be <= to the visibility timeout period on the queue
+      FunctionName: !Sub "bw-handle-clean-venue-env-requests-${StageName}"
+      Role: arn:aws:iam::552520131273:role/bw-exec
+      CodeUri: ./
+      Handler: ./dist/lambda/handleCleanVenueEnvRequests.handleCleanVenueEnvRequestsFn
+      Description: Consumer of CleanVenueEnvQueue; removes deliveries/tasks/history for non-ACTIVE venues.
+      Events:
+        NotificationsSQS:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt bwCleanVenueEnvQueue.Arn
+            BatchSize: 10 # Max records per poll
+
+  # https://docs.aws.amazon.com/lambda/latest/dg/with-s3-example-use-app-spec.html
+  bwHandleS3Events:
+    Type: AWS::Serverless::Function
+    Properties:
+      Timeout: 900
+      MemorySize: 1024
+      FunctionName: !Sub "bw-handle-s3-events-${StageName}"
+      Role: arn:aws:iam::552520131273:role/bw-exec
+      CodeUri: ./
+      Handler: ./dist/lambda/handleS3Events.handleS3EventsFn
+      Description: Handle S3 events to primarily process returned manifests
+# todo: need to find a way around needing s3 as a resource declared by this file
+#      Events:
+#        S3Event:
+#          Type: S3
+#          Properties:
+#            Bucket: !Ref S3PartnerBucketName
+#            Events: s3:ObjectCreated:*
+
+  #
+  # Scheduled Lambdas
+  # https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/sam-property-function-schedule.html
+  # https://docs.aws.amazon.com/eventbridge/latest/userguide/scheduled-events.html
+  #
+
+  bwCleanEnv:
+    Type: AWS::Serverless::Function
+    Conditions: CreateDevResources
+    Properties:
+      FunctionName: !Sub "bw-scheduled-clean-env-${StageName}"
+      Role: arn:aws:iam::552520131273:role/bw-exec
+      CodeUri: ./
+      Handler: ./dist/lambda/scheduled/cleanEnv.cleanEnvFn
+      Description: Removes all deliveries and delivery events in Venues with status of TEST for the DEV environment
+      Events:
+        bwCleanEnvDaily:
+          Type: Schedule
+          Properties:
+            Schedule: 'cron(0, 10, *, *, ?, *)'
+            Name: !Sub "Bootworks-Daily-Clean-Environment-${StageName}"
+            # Only enabled for dev environments just in case
+            Enabled: !Equals [ true, CreateDevResources ]
+
+  bwDetectPickupScheduleTime:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "bw-scheduled-detect-pickup-schedule-time-${StageName}"
+      Role: arn:aws:iam::552520131273:role/bw-exec
+      CodeUri: ./
+      Handler: ./dist/lambda/scheduled/detectPickupScheduleTime.detectPickupScheduleTimeFn
+      Description: Checks for "start of day" at Venues and creates CreateScheduledPickups queue messages as needed.
+      Events:
+        Scheduled:
+          Type: Schedule
+          Properties:
+            Schedule: 'cron(0, *, *, *, ?, *)' # Every hour
+            Name: !Sub "bw-daily-detect-pickup-schedule-time-${StageName}"
+
+  bwDetectPickupCancelTime:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "bw-detect-pickup-cancel-time-${StageName}"
+      Role: arn:aws:iam::552520131273:role/bw-exec
+      CodeUri: ./
+      Handler: ./dist/lambda/scheduled/detectPickupCancelTime.detectPickupCancelTimeFn
+      Description: Checks for "end of day" at Venues and creates CancelScheduledPickups queue messages as needed.
+      Events:
+        Scheduled:
+          Type: Schedule
+          Properties:
+            Schedule: 'cron(0, *, *, *, ?, *)' # Every hour
+            Name: !Sub "bw-daily-detect-pickup-cancel-time-${StageName}"
+
+  bwDetectPickupCheckTime:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "bw-detect-pickup-check-time-${StageName}"
+      Role: arn:aws:iam::552520131273:role/bw-exec
+      CodeUri: ./
+      Handler: ./dist/lambda/scheduled/detectPickupCheckTime.detectPickupCheckTimeFn
+      Description: Checks for "pre-start of day" at Venues and creates CheckScheduledPickups queue messages as needed.
+      Events:
+        Scheduled:
+          Type: Schedule
+          Properties:
+            Schedule: 'cron(0, *, *, *, ?, *)' # Every hour
+            Name: !Sub "bw-daily-detect-pickup-check-time-${StageName}"
+
+  #
+  # AWS Gateway Lambda Handlers
+  # https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#awsserverlessfunction
+  #
+
+  ## Auth - Venue
+  bwListVenues:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "bw-list-venues-${StageName}"
+      Role: arn:aws:iam::552520131273:role/bw-exec
+      CodeUri: ./
+      Handler: ./dist/lambda/listVenues.listVenuesFn
+      ProvisionedConcurrencyConfig:
+        ProvisionedConcurrentExecutions: !Ref ConcurrencyLow
+      Description: List venues
+      Events:
+        ExplicitApi:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: GET
+            Path: /venues
+            TimeoutInMillis: 15000
+            PayloadFormatVersion: "2.0"
+            RouteSettings:
+              ThrottlingBurstLimit: 600
+            Auth:
+              Authorizer: AuthZeroAuthorizer
+              AuthorizationScopes:
+                - "read"
+                - "read:mine"
+                - "read:venues" # deprecated
+
+  bwGetVenue:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "bw-get-venue-${StageName}"
+      Role: arn:aws:iam::552520131273:role/bw-exec
+      CodeUri: ./
+      Handler: ./dist/lambda/getVenue.getVenueFn
+      ProvisionedConcurrencyConfig:
+        ProvisionedConcurrentExecutions: !Ref ConcurrencyLow
+      Description: Get venue by ID
+      Events:
+        ExplicitApi:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: GET
+            Path: /venues/{venueId}
+            TimeoutInMillis: 15000
+            PayloadFormatVersion: "2.0"
+            RouteSettings:
+              ThrottlingBurstLimit: 600
+            Auth:
+              Authorizer: AuthZeroAuthorizer
+              AuthorizationScopes:
+                - "read"
+                - "read:mine"
+
+  bwUpdateVenueTenant:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "bw-update-venue-tenant-${StageName}"
+      Role: arn:aws:iam::552520131273:role/bw-exec
+      CodeUri: ./
+      Handler: ./dist/lambda/updateVenueTenant.updateVenueTenantFn
+      Description: Create or update Tenant on a Venue
+      Events:
+        ExplicitApi:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: PUT
+            Path: /venues/{venueId}/tenants/{tenantId}
+            TimeoutInMillis: 15000
+            PayloadFormatVersion: "2.0"
+            RouteSettings:
+              ThrottlingBurstLimit: 600
+            Auth:
+              Authorizer: AuthZeroAuthorizer
+              AuthorizationScopes:
+                - "write"
+                - "write:venues" # deprecated
+                - "write:tenant"
+                - "write:tenant:create"
+                - "write:tenant:edit"
+  bwDeleteVenueTenant:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "bw-delete-venue-tenant-${StageName}"
+      Role: arn:aws:iam::552520131273:role/bw-exec
+      CodeUri: ./
+      Handler: ./dist/lambda/deleteVenueTenant.deleteVenueTenantFn
+      Description: Soft-delete a tenant from a venue
+      Events:
+        ExplicitApi:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: DELETE
+            Path: /venues/{venueId}/tenants/{tenantId}
+            TimeoutInMillis: 15000
+            PayloadFormatVersion: "2.0"
+            RouteSettings:
+              ThrottlingBurstLimit: 600
+            Auth:
+              Authorizer: AuthZeroAuthorizer
+              AuthorizationScopes:
+                - "write"
+                - "write:venues" # deprecated
+                - "write:tenant"
+                - "write:tenant:delete"
+  ## Auth - DeliveryStatusDefinition
+  bwListDeliveryStatuses:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "bw-list-delivery-status-${StageName}"
+      Role: arn:aws:iam::552520131273:role/bw-exec
+      CodeUri: ./
+      Handler: ./dist/lambda/listDeliveryStatuses.listDeliveryStatusesFn
+      ProvisionedConcurrencyConfig:
+        ProvisionedConcurrentExecutions: !Ref ConcurrencyLow
+      Description: Get delivery from db or carrier
+      Events:
+        ExplicitApi:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: GET
+            Path: /deliveryStatuses
+            TimeoutInMillis: 15000
+            PayloadFormatVersion: "2.0"
+            RouteSettings:
+              ThrottlingBurstLimit: 600
+
+  ## Auth - Carrier
+  bwListCarriers:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "bw-list-carriers-${StageName}"
+      Role: arn:aws:iam::552520131273:role/bw-exec
+      CodeUri: ./
+      Handler: ./dist/lambda/listCarriers.listCarriersFn
+      Description: List carriers
+      Events:
+        ExplicitApi:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: GET
+            Path: /carriers
+            TimeoutInMillis: 15000
+            PayloadFormatVersion: "2.0"
+            RouteSettings:
+              ThrottlingBurstLimit: 600
+            Auth:
+              Authorizer: AuthZeroAuthorizer
+              AuthorizationScopes:
+                - "read"
+                - "read:carriers" # deprecated
+
+  bwUpdateCarrier:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "bw-update-carrier-${StageName}"
+      Role: arn:aws:iam::552520131273:role/bw-exec
+      CodeUri: ./
+      Handler: ./dist/lambda/updateCarrier.updateCarrierFn
+      Description: Update carrier
+      Events:
+        ExplicitApi:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: POST
+            Path: /carriers/{carrierCode}
+            TimeoutInMillis: 15000
+            PayloadFormatVersion: "2.0"
+            RouteSettings:
+              ThrottlingBurstLimit: 600
+            Auth:
+              Authorizer: AuthZeroAuthorizer
+              AuthorizationScopes:
+                - "write"
+                - "write:carriers" # deprecated
+
+  ## Auth - Delivery
+  bwGetDelivery:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "bw-get-delivery-${StageName}"
+      Role: arn:aws:iam::552520131273:role/bw-exec
+      CodeUri: ./
+      Handler: ./dist/lambda/getDelivery.getDeliveryFn
+      Description: Get delivery from db or carrier
+      ProvisionedConcurrencyConfig:
+        ProvisionedConcurrentExecutions: !Ref ConcurrencyHigh
+      Events:
+        ExplicitApi:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: GET
+            Path: /deliveries/delivery
+            TimeoutInMillis: 15000
+            PayloadFormatVersion: "2.0"
+            RouteSettings:
+              ThrottlingBurstLimit: 600
+            Auth:
+              Authorizer: AuthZeroAuthorizer
+              AuthorizationScopes:
+                - "read"
+                - "read:mine"
+                - "read:deliveries" # deprecated
+
+  bwUpdateTaskClaims:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "bw-update-task-claims-${StageName}"
+      Role: arn:aws:iam::552520131273:role/bw-exec
+      CodeUri: ./
+      Handler: ./dist/lambda/updateTaskClaims.updateTaskClaimsFn
+      Description: Update claim statuses for tasks
+      ProvisionedConcurrencyConfig:
+        ProvisionedConcurrentExecutions: !Ref ConcurrencyHigh
+      Events:
+        ExplicitApi:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: POST
+            Path: /venues/{venueId}/tasks
+            TimeoutInMillis: 15000
+            PayloadFormatVersion: "2.0"
+            RouteSettings:
+              ThrottlingBurstLimit: 600
+            Auth:
+              Authorizer: AuthZeroAuthorizer
+              AuthorizationScopes:
+                - "write"
+                - "write:task"
+
+  bwGetMyTasks:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "bw-get-my-tasks-${StageName}"
+      Role: arn:aws:iam::552520131273:role/bw-exec
+      CodeUri: ./
+      Handler: ./dist/lambda/getMyTasks.getMyTasksFn
+      Description: Get currently-claimed tasks for user
+      ProvisionedConcurrencyConfig:
+        ProvisionedConcurrentExecutions: !Ref ConcurrencyHigh
+      Events:
+        ExplicitApi:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: GET
+            Path: /tasks/me
+            TimeoutInMillis: 15000
+            PayloadFormatVersion: "2.0"
+            RouteSettings:
+              ThrottlingBurstLimit: 600
+            Auth:
+              Authorizer: AuthZeroAuthorizer
+              AuthorizationScopes:
+                - "read"
+                - "read:mine"
+
+  bwListAvailableTasks:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "bw-list-available-tasks-${StageName}"
+      Role: arn:aws:iam::552520131273:role/bw-exec
+      CodeUri: ./
+      Handler: ./dist/lambda/listAvailableTasks.listAvailableTasksFn
+      Description: List available tasks for a venue
+      ProvisionedConcurrencyConfig:
+        ProvisionedConcurrentExecutions: !Ref ConcurrencyHigh
+      Events:
+        ExplicitApi:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: GET
+            Path: /venues/{venueId}/tasks/available
+            TimeoutInMillis: 15000
+            PayloadFormatVersion: "2.0"
+            RouteSettings:
+              ThrottlingBurstLimit: 600
+            Auth:
+              Authorizer: AuthZeroAuthorizer
+              AuthorizationScopes:
+                - "read"
+                - "read:mine"
+
+  bwListTasks:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "bw-list-tasks-${StageName}"
+      Role: arn:aws:iam::552520131273:role/bw-exec
+      CodeUri: ./
+      Handler: ./dist/lambda/listTasks.listTasksFn
+      Description: List tasks for a venue
+      ProvisionedConcurrencyConfig:
+        ProvisionedConcurrentExecutions: !Ref ConcurrencyHigh
+      Events:
+        ExplicitApi:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: GET
+            Path: /venues/{venueId}/tasks
+            TimeoutInMillis: 15000
+            PayloadFormatVersion: "2.0"
+            RouteSettings:
+              ThrottlingBurstLimit: 600
+            Auth:
+              Authorizer: AuthZeroAuthorizer
+              AuthorizationScopes:
+                - "read"
+                - "read:mine"
+
+  bwListDeliveries:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "bw-list-deliveries-${StageName}"
+      Role: arn:aws:iam::552520131273:role/bw-exec
+      CodeUri: ./
+      Handler: ./dist/lambda/listDeliveries.listDeliveriesFn
+      Description: List deliveries for a venue
+      ProvisionedConcurrencyConfig:
+        ProvisionedConcurrentExecutions: !Ref ConcurrencyHigh
+      Events:
+        ExplicitApi:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: GET
+            Path: /deliveries
+            TimeoutInMillis: 15000
+            PayloadFormatVersion: "2.0"
+            RouteSettings:
+              ThrottlingBurstLimit: 600
+            Auth:
+              Authorizer: AuthZeroAuthorizer
+              AuthorizationScopes:
+                - "read"
+                - "read:mine"
+                - "read:deliveries" # deprecated
+
+  bwUpdateDeliveries:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "bw-update-delivery-${StageName}"
+      Role: arn:aws:iam::552520131273:role/bw-exec
+      MemorySize: 512
+      CodeUri: ./
+      Handler: ./dist/lambda/updateDeliveries.updateDeliveriesFn
+      Description: Get delivery from db or carrier
+      ProvisionedConcurrencyConfig:
+        ProvisionedConcurrentExecutions: !Ref ConcurrencyUpdateDeliveries
+      Events:
+        ExplicitApi:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: POST
+            Path: /venues/{venueId}/deliveries
+            TimeoutInMillis: 15000
+            PayloadFormatVersion: "2.0"
+            RouteSettings:
+              ThrottlingBurstLimit: 600
+            Auth:
+              Authorizer: AuthZeroAuthorizer
+              AuthorizationScopes:
+                - "write"
+                - "write:deliveries"
+                - "write:delivery:status"
+                - "update:delivery_statuses" # deprecated
+        ExplicitApiOld:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: POST
+            Path: /venue/{venueId}/deliveries
+            TimeoutInMillis: 15000
+            PayloadFormatVersion: "2.0"
+            RouteSettings:
+              ThrottlingBurstLimit: 600
+            Auth:
+              Authorizer: AuthZeroAuthorizer
+              AuthorizationScopes:
+                - "write"
+                - "write:deliveries"
+                - "write:delivery:status"
+                - "update:delivery_statuses" # deprecated
+
+  bwImportDeliveries:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "bw-import-deliveries-${StageName}"
+      Role: arn:aws:iam::552520131273:role/bw-exec
+      Timeout: 900
+      MemorySize: 1024
+      CodeUri: ./
+      Handler: ./dist/lambda/importDeliveries.importDeliveriesFn
+      Description: Process a carrier delivery manifest list
+      ProvisionedConcurrencyConfig:
+        ProvisionedConcurrentExecutions: !Ref ConcurrencyLow
+      Events:
+        ExplicitApi:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: POST
+            Path: /venues/{venueId}/deliveries/import
+            TimeoutInMillis: 30000
+            PayloadFormatVersion: "2.0"
+            RouteSettings:
+              ThrottlingBurstLimit: 600
+            Auth:
+              Authorizer: AuthZeroAuthorizer
+              AuthorizationScopes:
+                - "write"
+                - "write:deliveries"
+                - "write:delivery:status"
+
+  bwRequestPhotoUpload:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "bw-request-photo-upload-${StageName}"
+      Role: arn:aws:iam::552520131273:role/bw-exec
+      CodeUri: ./
+      Handler: ./dist/lambda/requestPhotoUpload.requestPhotoUploadFn
+      ProvisionedConcurrencyConfig:
+        ProvisionedConcurrentExecutions: !Ref ConcurrencyLow
+      Description: Request a URL to upload a photo
+      Events:
+        ExplicitApi: # warning: creates a public endpoint
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: POST
+            Path: /photos
+            TimeoutInMillis: 15000
+            PayloadFormatVersion: "2.0"
+            RouteSettings:
+              ThrottlingBurstLimit: 600
+            Auth:
+              Authorizer: AuthZeroAuthorizer
+              AuthorizationScopes:
+                - "write"
+                - "write:deliveries"
+                - "write:delivery:status"
+
+  bwGetPhoto:
+    Type: AWS::Serverless::Function
+    Properties:
+      Tracing: Active
+      FunctionName: !Sub "bw-get-photo-${StageName}"
+      Role: arn:aws:iam::552520131273:role/bw-exec
+      CodeUri: ./
+      Handler: ./dist/lambda/getPhoto.getPhotoFn
+      ProvisionedConcurrencyConfig:
+        ProvisionedConcurrentExecutions: !Ref ConcurrencyLow
+      Description: Get (a redirect to) photo image data
+      Events:
+        PhotoApi:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: GET
+            Path: /photos/{photoId}/{photoType}
+            TimeoutInMillis: 15000
+            PayloadFormatVersion: "2.0"
+            RouteSettings:
+              ThrottlingBurstLimit: 600
+            Auth:
+              Authorizer: AuthZeroAuthorizer
+              AuthorizationScopes:
+                - "read"
+                - "read:mine"
+
+  bwGetPhotoMetadata:
+    Type: AWS::Serverless::Function
+    Properties:
+      Tracing: Active
+      FunctionName: !Sub "bw-get-photo-metadata-${StageName}"
+      Role: arn:aws:iam::552520131273:role/bw-exec
+      CodeUri: ./
+      Handler: ./dist/lambda/getPhotoMetadata.getPhotoMetadataFn
+      ProvisionedConcurrencyConfig:
+        ProvisionedConcurrentExecutions: !Ref ConcurrencyLow
+      Description: Get metadata about a photo
+      Events:
+        PhotoMetadataApi:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: GET
+            Path: /photos/{photoId}
+            TimeoutInMillis: 15000
+            PayloadFormatVersion: "2.0"
+            RouteSettings:
+              ThrottlingBurstLimit: 600
+            Auth:
+              Authorizer: AuthZeroAuthorizer
+              AuthorizationScopes:
+                - "read"
+                - "read:mine"
+
+  bwGetDeliveryPhotos:
+    Type: AWS::Serverless::Function
+    Properties:
+      Tracing: Active
+      FunctionName: !Sub "bw-get-delivery-photos-${StageName}"
+      Role: arn:aws:iam::552520131273:role/bw-exec
+      CodeUri: ./
+      Handler: ./dist/lambda/getDeliveryPhotos.getDeliveryPhotosFn
+      ProvisionedConcurrencyConfig:
+        ProvisionedConcurrentExecutions: !Ref ConcurrencyLow
+      Description: Get metadata about photos associated with a delivery
+      Events:
+        ExplicitApi: # warning: creates a public endpoint
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: GET
+            Path: /venues/{venueId}/deliveries/{deliveryId}/photos
+            TimeoutInMillis: 15000
+            PayloadFormatVersion: "2.0"
+            RouteSettings:
+              ThrottlingBurstLimit: 600
+            Auth:
+              Authorizer: AuthZeroAuthorizer
+              AuthorizationScopes:
+                - "read"
+                - "read:mine"
+
+  ## Stat
+  bwGetTenantStat:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "bw-get-tenant-stat-${StageName}"
+      Role: arn:aws:iam::552520131273:role/bw-exec
+      CodeUri: ./
+      Handler: ./dist/lambda/stat/getTenantStat.getTenantStatFn
+      Description: Get count of packages by staging area or total packages arrived
+      ProvisionedConcurrencyConfig:
+        ProvisionedConcurrentExecutions: !Ref ConcurrencyHigh
+      Events:
+        ExplicitApi:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: GET
+            Path: /venues/{venueId}/tenants/{tenantId}/{statType}
+            TimeoutInMillis: 15000
+            PayloadFormatVersion: "2.0"
+            RouteSettings:
+              ThrottlingBurstLimit: 600
+            Auth:
+              Authorizer: AuthZeroAuthorizer
+              AuthorizationScopes:
+                - "read"
+                - "read:mine"
+
+  ## Routing endpoints
+  bwGetRoute:
+    Type: AWS::Serverless::Function
+    Properties:
+      Tracing: Active
+      FunctionName: !Sub "bw-get-route-${StageName}"
+      Role: arn:aws:iam::552520131273:role/bw-exec
+      CodeUri: ./
+      Handler: ./dist/lambda/routing/getRoute.getRouteFn
+      ProvisionedConcurrencyConfig:
+        ProvisionedConcurrentExecutions: !Ref ConcurrencyLow
+      Description: Get enhanced PI Route service routing information
+      Events:
+        ExplicitApi:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: POST
+            Path: /venues/{venueId}/routing/getRoute
+            TimeoutInMillis: 15000
+            PayloadFormatVersion: "2.0"
+            RouteSettings:
+              ThrottlingBurstLimit: 600
+            Auth:
+              Authorizer: AuthZeroAuthorizer
+              AuthorizationScopes:
+                - "read"
+                - "read:venues"
+
+  bwSuggestStops:
+    Type: AWS::Serverless::Function
+    Properties:
+      Tracing: Active
+      FunctionName: !Sub "bw-suggest-stops-${StageName}"
+      Role: arn:aws:iam::552520131273:role/bw-exec
+      CodeUri: ./
+      Handler: ./dist/lambda/routing/suggestStops.suggestStopsFn
+      ProvisionedConcurrencyConfig:
+        ProvisionedConcurrentExecutions: !Ref ConcurrencyLow
+      Description: Get enhanced PI Route service routing information with suggested stops
+      Events:
+        ExplicitApi:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: POST
+            Path: /venues/{venueId}/routing/suggestStops
+            TimeoutInMillis: 15000
+            PayloadFormatVersion: "2.0"
+            RouteSettings:
+              ThrottlingBurstLimit: 600
+            Auth:
+              Authorizer: AuthZeroAuthorizer
+              AuthorizationScopes:
+                - "read"
+                - "read:venues"
+
+  bwGetNextTrip:
+    Type: AWS::Serverless::Function
+    Properties:
+      Tracing: Active
+      FunctionName: !Sub "bw-get-next-trip-${StageName}"
+      Role: arn:aws:iam::552520131273:role/bw-exec
+      CodeUri: ./
+      Handler: ./dist/lambda/routing/getNextTrip.getNextTripFn
+      ProvisionedConcurrencyConfig:
+        ProvisionedConcurrentExecutions: !Ref ConcurrencyLow
+      Description: Get enhanced PI Route service routing information for the best next trip
+      Events:
+        ExplicitApi:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: POST
+            Path: /venues/{venueId}/routing/getNextTrip
+            TimeoutInMillis: 15000
+            PayloadFormatVersion: "2.0"
+            RouteSettings:
+              ThrottlingBurstLimit: 600
+            Auth:
+              Authorizer: AuthZeroAuthorizer
+              AuthorizationScopes:
+                - "read"
+                - "read:venues"
+
+  ## On-demand Endpoints
+  bwRequestCleanVenueEnv:
+    Type: AWS::Serverless::Function
+    Properties:
+      Tracing: Active
+      FunctionName: !Sub "bw-request-clean-venue-env-${StageName}"
+      Role: arn:aws:iam::552520131273:role/bw-exec
+      CodeUri: ./
+      Handler: ./dist/lambda/onDemand/requestCleanVenueEnv.requestCleanVenueEnvFn
+      ProvisionedConcurrencyConfig:
+        ProvisionedConcurrentExecutions: !Ref ConcurrencyLow
+      Description: On-demand request to remove deliveries/tasks/history from a non-ACTIVE venue
+      Events:
+        ExplicitApi:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: POST
+            Path: /venues/{venueId}/clean
+            TimeoutInMillis: 15000
+            PayloadFormatVersion: "2.0"
+            RouteSettings:
+              ThrottlingBurstLimit: 600
+            Auth:
+              Authorizer: AuthZeroAuthorizer
+              AuthorizationScopes:
+                - "write"
+
+  ## Public Endpoints - These should NOT have Authorizer data
+  bwGetVersion:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "bw-get-version-${StageName}"
+      Role: arn:aws:iam::552520131273:role/bw-exec
+      CodeUri: ./
+      Handler: ./dist/lambda/getVersion.getVersionFn
+      Description: Get API Version Info
+      Events:
+        ExplicitApi:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: GET
+            Path: /version
+            TimeoutInMillis: 15000
+            PayloadFormatVersion: "2.0"
+            RouteSettings:
+              ThrottlingBurstLimit: 600
+
+  bwPublicDeliveryStatus:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "bw-public-delivery-status-${StageName}"
+      Role: arn:aws:iam::552520131273:role/bw-exec
+      CodeUri: ./
+      Handler: ./dist/lambda/public/getDeliveryStatus.getDeliveryStatusPublicFn
+      Description: Public endpoint to provide status of delivery
+      ProvisionedConcurrencyConfig:
+        ProvisionedConcurrentExecutions: !Ref ConcurrencyLow
+      Events:
+        ExplicitApiOld: # warning: creates a public endpoint
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: GET
+            Path: /public/venues/{venueId}/deliveries/delivery/status
+            TimeoutInMillis: 15000
+            PayloadFormatVersion: "2.0"
+            RouteSettings:
+              ThrottlingBurstLimit: 600
+        ExplicitApi: # warning: creates a public endpoint
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: GET
+            Path: /public/delivery/status
+            TimeoutInMillis: 15000
+            PayloadFormatVersion: "2.0"
+            RouteSettings:
+              ThrottlingBurstLimit: 600
+
+  bwPublicDeliveryStatuses:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "bw-public-delivery-statuses-${StageName}"
+      Role: arn:aws:iam::552520131273:role/bw-exec
+      CodeUri: ./
+      Handler: ./dist/lambda/public/listDeliveryStatuses.listDeliveryStatusesPublicFn
+      Description: Public endpoint to provide list of DeliveryStatusDefinitions
+      ProvisionedConcurrencyConfig:
+        ProvisionedConcurrentExecutions: !Ref ConcurrencyLow
+      Events:
+        ExplicitApi: # warning: creates a public endpoint
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: GET
+            Path: /public/deliveryStatuses
+            TimeoutInMillis: 15000
+            PayloadFormatVersion: "2.0"
+            RouteSettings:
+              ThrottlingBurstLimit: 600
+
+  bwPublicRequestPickup:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "bw-public-request-pickup-${StageName}"
+      Role: arn:aws:iam::552520131273:role/bw-exec
+      CodeUri: ./
+      Handler: ./dist/lambda/public/requestPickup.requestPickupFn
+      Description: Public endpoint to allow tenants to request pickups
+      ProvisionedConcurrencyConfig:
+        ProvisionedConcurrentExecutions: !Ref ConcurrencyLow
+      Events:
+        ExplicitApi:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: POST
+            Path: /public/venues/{venueId}/tenants/{tenantId}/requestPickup
+            TimeoutInMillis: 15000
+            PayloadFormatVersion: "2.0"
+            RouteSettings:
+              ThrottlingBurstLimit: 600
+
+  bwGetPublicVenue:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "bw-public-venue-${StageName}"
+      Role: arn:aws:iam::552520131273:role/bw-exec
+      CodeUri: ./
+      Handler: ./dist/lambda/public/getPublicVenue.getPublicVenueFn
+      Description: Public endpoint to return basic info on venues and their tenants
+      ProvisionedConcurrencyConfig:
+        ProvisionedConcurrentExecutions: !Ref ConcurrencyLow
+      Events:
+        ExplicitApi:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: GET
+            Path: /public/venues/{venueId}/tenants/{tenantId}
+            TimeoutInMillis: 15000
+            PayloadFormatVersion: "2.0"
+            RouteSettings:
+              ThrottlingBurstLimit: 600
+
+  #
+  # Event API Lambdas
+  #
+
+  # TODO: Have a different endpoint for every type of location event? Or have one
+  # endpoint for all location events?
+
+  # TODO: AuthorizationScopes - Do we need a specific permission for this? Or should
+  # we just allow any valid token to call this?
+  bwRecordLocationEvent:
+    Type: AWS::Serverless::Function
+    Properties:
+      Tracing: Active
+      FunctionName: !Sub "bw-event-location-${StageName}"
+      Role: arn:aws:iam::552520131273:role/bw-exec
+      CodeUri: ./
+      Handler: ./dist/lambda/events/recordLocationEvent.recordLocationEventFn
+      ProvisionedConcurrencyConfig:
+        ProvisionedConcurrentExecutions: !Ref ConcurrencyHigh
+      Description: Record a location event
+      Events:
+        Http:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: PUT
+            Path: /events/location
+            TimeoutInMillis: 15000
+            PayloadFormatVersion: "2.0"
+            RouteSettings:
+              ThrottlingBurstLimit: 600
+            Auth:
+              Authorizer: AuthZeroAuthorizer
+
+  #
+  # Command-API Lambdas
+  #
+
+  bwCommandSetRouteOrder:
+    Type: AWS::Serverless::Function
+    Properties:
+      Tracing: Active
+      FunctionName: !Sub "bw-command-setRouteOrder-${StageName}"
+      Role: arn:aws:iam::552520131273:role/bw-exec
+      CodeUri: ./
+      Handler: ./dist/lambda/commands/setRouteOrder.setRouteOrderFn
+      ProvisionedConcurrencyConfig:
+        ProvisionedConcurrentExecutions: !Ref ConcurrencyLow
+      Description: Set route order for tenants within a venue
+      Events:
+        Http:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: PUT
+            Path: /config/venue/{venueId}/setRouteOrder
+            TimeoutInMillis: 15000
+            PayloadFormatVersion: "2.0"
+            RouteSettings:
+              ThrottlingBurstLimit: 600
+            Auth:
+              Authorizer: AuthZeroAuthorizer
+              AuthorizationScopes:
+                - "write"
+                - "write:tenant"
+                - "write:tenant:edit"
+
+  bwCommandUpdateClustering:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "bw-command-updateClustering-${StageName}"
+      Role: arn:aws:iam::552520131273:role/bw-exec
+      CodeUri: ./
+      Handler: ./dist/lambda/commands/updateClustering.updateClusteringFn
+      ProvisionedConcurrencyConfig:
+        ProvisionedConcurrentExecutions: !Ref ConcurrencyLow
+      Description: Update a venue's tenant clustering configuration
+      Events:
+        Http:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: PUT
+            Path: /config/venue/{venueId}/updateClustering
+            TimeoutInMillis: 15000
+            PayloadFormatVersion: "2.0"
+            RouteSettings:
+              ThrottlingBurstLimit: 600
+            Auth:
+              Authorizer: AuthZeroAuthorizer
+              AuthorizationScopes:
+                - "write"
+                - "write:tenant"
+
+  bwCommandAddTenantMappings:
+    Type: AWS::Serverless::Function
+    Properties:
+      Tracing: Active
+      FunctionName: !Sub "bw-command-addTenantMappings-${StageName}"
+      Role: arn:aws:iam::552520131273:role/bw-exec
+      CodeUri: ./
+      Handler: ./dist/lambda/commands/addTenantMappings.addTenantMappingsFn
+      ProvisionedConcurrencyConfig:
+        ProvisionedConcurrentExecutions: !Ref ConcurrencyLow
+      Description: Add name/address mappings for a tenant
+      Events:
+        Http:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: PUT
+            Path: /config/venue/{venueId}/addTenantMappings
+            TimeoutInMillis: 15000
+            PayloadFormatVersion: "2.0"
+            RouteSettings:
+              ThrottlingBurstLimit: 600
+            Auth:
+              Authorizer: AuthZeroAuthorizer
+              AuthorizationScopes:
+                - "write"
+                - "write:tenant"
+                - "write:tenant:edit"
+                - "write:tenant:create"
+
+  bwCommandRemoveTenantMappings:
+    Type: AWS::Serverless::Function
+    Properties:
+      Tracing: Active
+      FunctionName: !Sub "bw-command-removeTenantMappings-${StageName}"
+      Role: arn:aws:iam::552520131273:role/bw-exec
+      CodeUri: ./
+      Handler: ./dist/lambda/commands/removeTenantMappings.removeTenantMappingsFn
+      ProvisionedConcurrencyConfig:
+        ProvisionedConcurrentExecutions: !Ref ConcurrencyLow
+      Description: Remove name/address mappings from a tenant
+      Events:
+        Http:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: PUT
+            Path: /config/venue/{venueId}/removeTenantMappings
+            TimeoutInMillis: 15000
+            PayloadFormatVersion: "2.0"
+            RouteSettings:
+              ThrottlingBurstLimit: 600
+            Auth:
+              Authorizer: AuthZeroAuthorizer
+              AuthorizationScopes:
+                - "write"
+                - "write:tenant"
+                - "write:tenant:edit"
+                - "write:tenant:create"
+
+  # Obsolete Routes all move to this function.  Drop the Authorizer, so it responds quickly
+  bwObsoleteApiMethods:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "bw-obsolete-${StageName}"
+      Role: arn:aws:iam::552520131273:role/bw-exec
+      CodeUri: ./
+      Handler: ./dist/lambda/_obsolete.handler
+      Description: Get delivery from db or carrier
+      Events:
+        ObsoleteUpdateDeliveryStatus:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: POST
+            Path: /updateDeliveryStatus
+            TimeoutInMillis: 15000
+            PayloadFormatVersion: "2.0"
+            RouteSettings:
+              ThrottlingBurstLimit: 600
+        ObsoleteUpdateHoldingArea:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: PUT
+            Path: /venues/{venueId}/holdingArea
+            TimeoutInMillis: 15000
+            PayloadFormatVersion: "2.0"
+            RouteSettings:
+              ThrottlingBurstLimit: 600
+        ObsoleteGetMyDeliveries:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: GET
+            Path: /deliveries/me
+            TimeoutInMillis: 15000
+            PayloadFormatVersion: "2.0"
+            RouteSettings:
+              ThrottlingBurstLimit: 600
+        ObsoleteUpdateVenueTenantClustering:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: POST
+            Path: /venues/{venueId}/config/tenantClustering
+            TimeoutInMillis: 15000
+            PayloadFormatVersion: "2.0"
+            RouteSettings:
+              ThrottlingBurstLimit: 600
+
+  # API Gateway HttpAPI
+  HttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      # Define API in definition body so we can take advantage of intrinsic functions in the future
+      DefinitionBody:
+        openapi: "3.0.1"
+        info:
+          title: !Sub "bootworks-api-v0-${StageName}"
+          version: "1.0"
+        tags:
+          - name: "httpapi:createdBy"
+            x-amazon-apigateway-tag-value: "SAM"
+        paths:
+          /config/venue/{venueId}/setRouteOrder:
+            parameters:
+              - $ref: '#/components/parameters/venueId'
+            put:
+              responses:
+                default:
+                  description: "Default response for PUT /config/venue/{venueId}/setRouteOrder"
+          /config/venue/{venueId}/addTenantMappings:
+            parameters:
+              - $ref: '#/components/parameters/venueId'
+            put:
+              responses:
+                default:
+                  description: "Default response for PUT /config/venue/{venueId}/addTenantMappings"
+          /config/venue/{venueId}/removeTenantMappings:
+            parameters:
+              - $ref: '#/components/parameters/venueId'
+            put:
+              responses:
+                default:
+                  description: "Default response for PUT /config/venue/{venueId}/removeTenantMappings"
+          /events/location:
+            put:
+              responses:
+                default:
+                  description: "Default response for PUT /events/location"
+          /venues/{venueId}/tenants/{tenantId}:
+            parameters:
+              - $ref: '#/components/parameters/venueId'
+              - $ref: '#/components/parameters/tenantId'
+            put:
+              parameters:
+                - $ref: '#/components/parameters/offsetParam'
+              responses:
+                default:
+                  description: "Default response for PUT /venues/{venueId}/tenants/{tenantId}"
+            delete:
+              responses:
+                default:
+                  description: "Default response for DELETE /venues/{venueId}/tenants/{tenantId}"
+          /venues/{venueId}/tenants/{tenantId}/{statType}:
+            parameters:
+              - $ref: '#/components/parameters/venueId'
+              - $ref: '#/components/parameters/tenantId'
+              - $ref: '#/components/parameters/statType'
+            get:
+              responses:
+                default:
+                  description: "Default response for GET /venues/{venueId}/tenants/{tenantId}/{statType}"
+          /carriers:
+            get:
+              responses:
+                default:
+                  description: "Default response for GET /carriers"
+          /deliveries:
+            get:
+              responses:
+                default:
+                  description: "Default response for GET /deliveries"
+          /deliveries/delivery:
+            get:
+              responses:
+                default:
+                  description: "Default response for GET /deliveries/delivery"
+          /deliveries/me:
+            get:
+              responses:
+                default:
+                  description: "Default response for GET /deliveries/me"
+          /deliveryStatuses:
+            get:
+              responses:
+                default:
+                  description: "Default response for GET /deliveryStatuses"
+          /photos/{photoId}:
+            parameters:
+              - $ref: '#/components/parameters/photoId'
+            get:
+              responses:
+                default:
+                  description: "Default response for GET /photos/{photoId}"
+          /photos/{photoId}/{photoType}:
+            parameters:
+              - $ref: '#/components/parameters/photoId'
+              - $ref: '#/components/parameters/photoType'
+            get:
+              responses:
+                default:
+                  description: "Default response for GET /photos/{photoId}/{photoType}"
+          /public/delivery/status:
+            get:
+              responses:
+                default:
+                  description: "Default response for GET /public/delivery/status"
+          /public/deliveryStatuses:
+            get:
+              responses:
+                default:
+                  description: "Default response for GET /public/deliveryStatuses"
+          /public/venues/{venueId}/deliveries/delivery/status:
+            parameters:
+              - $ref: '#/components/parameters/venueId'
+            get:
+              responses:
+                default:
+                  description: "Default response for GET /public/venues/{venueId}/deliveries/delivery/status"
+          /public/venues/{venueId}/tenants/{tenantId}:
+            parameters:
+              - $ref: '#/components/parameters/venueId'
+              - $ref: '#/components/parameters/tenantId'
+            get:
+              responses:
+                default:
+                  description: "Default response for GET /public/venues/{venueId}/tenants/{tenantId}"
+          /tasks/me:
+            get:
+              responses:
+                default:
+                  description: "Default response for GET /tasks/me"
+          /venues:
+            get:
+              responses:
+                default:
+                  description: "Default response for GET /venues"
+          /venues/{venueId}:
+            parameters:
+              - $ref: '#/components/parameters/venueId'
+            get:
+              responses:
+                default:
+                  description: "Default response for GET /venues/{venueId}"
+          /venues/{venueId}/deliveries/{deliveryId}/photos:
+            parameters:
+              - $ref: '#/components/parameters/venueId'
+              - $ref: '#/components/parameters/deliveryId'
+            get:
+              responses:
+                default:
+                  description: "Default response for GET /venues/{venueId}/deliveries/{deliveryId}/photos"
+          /venues/{venueId}/tasks:
+            parameters:
+              - $ref: '#/components/parameters/venueId'
+            get:
+              responses:
+                default:
+                  description: "Default response for GET /venues/{venueId}/tasks"
+            post:
+              responses:
+                default:
+                  description: "Default response for POST /venues/{venueId}/tasks"
+          /venues/{venueId}/tasks/available:
+            parameters:
+              - $ref: '#/components/parameters/venueId'
+            get:
+              responses:
+                default:
+                  description: "Default response for GET /venues/{venueId}/tasks/available"
+          /venues/{venueId}/clean:
+            parameters:
+              - $ref: '#/components/parameters/venueId'
+            post:
+              responses:
+                default:
+                  description: "Returns a BWResponse with field 'ok' equal to true if successful, false if unsuccessful."
+          /version:
+            get:
+              responses:
+                default:
+                  description: "Default response for GET /version"
+          /carriers/{carrierCode}:
+            parameters:
+              - $ref: '#/components/parameters/carrierCode'
+            post:
+              responses:
+                default:
+                  description: "Default response for POST /carriers/{carrierCode}"
+          /photos:
+            post:
+              responses:
+                default:
+                  description: "Default response for POST /photos"
+          /public/venues/{venueId}/tenants/{tenantId}/requestPickup:
+            parameters:
+              - $ref: '#/components/parameters/venueId'
+              - $ref: '#/components/parameters/tenantId'
+            post:
+              responses:
+                default:
+                  description: "Default response for POST /public/venues/{venueId}/tenants/{tenantId}/requestPickup"
+          /updateDeliveryStatus:
+            post:
+              responses:
+                default:
+                  description: "Default response for POST /updateDeliveryStatus"
+          /venue/{venueId}/deliveries:
+            parameters:
+              - $ref: '#/components/parameters/venueId'
+            post:
+              responses:
+                default:
+                  description: "Default response for POST /venue/{venueId}/deliveries"
+          /venues/{venueId}/config/tenantClustering:
+            parameters:
+              - $ref: '#/components/parameters/venueId'
+            post:
+              responses:
+                default:
+                  description: "Default response for POST /venues/{venueId}/config/tenantClustering"
+          /venues/{venueId}/deliveries:
+            parameters:
+              - $ref: '#/components/parameters/venueId'
+            post:
+              responses:
+                default:
+                  description: "Default response for POST /venues/{venueId}/deliveries"
+          /venues/{venueId}/holdingArea:
+            parameters:
+              - $ref: '#/components/parameters/venueId'
+            put:
+              responses:
+                default:
+                  description: "Default response for PUT /venues/{venueId}/holdingArea"
+          /venues/{venueId}/deliveries/import:
+            parameters:
+              - $ref: '#/components/parameters/venueId'
+            post:
+              responses:
+                default:
+                  description: "Default response for POST /venues/{venueId}/deliveries/import"
+          /venues/{venueId}/routing/getRoute:
+            parameters:
+              - $ref: '#/components/parameters/venueId'
+            post:
+              responses:
+                default:
+                  description: "Returns a BWResponse with field 'ok' equal to true if successful, false if unsuccessful."
+          /venues/{venueId}/routing/suggestStops:
+            parameters:
+              - $ref: '#/components/parameters/venueId'
+            post:
+              responses:
+                default:
+                  description: "Returns a BWResponse with field 'ok' equal to true if successful, false if unsuccessful."
+          /venues/{venueId}/routing/getNextTrip:
+            parameters:
+              - $ref: '#/components/parameters/venueId'
+            post:
+              responses:
+                default:
+                  description: "Returns a BWResponse with field 'ok' equal to true if successful, false if unsuccessful."
+        components:
+          parameters:
+            venueId:
+              in: path
+              name: venueId
+              schema:
+                type: string
+              required: true
+              description: Venue UUID
+            tenantId:
+              in: path
+              name: tenantId
+              schema:
+                type: string
+              required: true
+              description: Tenant UUID
+            deliveryId:
+              in: path
+              name: deliveryId
+              schema:
+                type: string
+              required: true
+              description: Delivery UUID
+            photoId:
+              in: path
+              name: photoId
+              schema:
+                type: string
+              required: true
+              description: Photo UUID
+            photoType:
+              in: path
+              name: photoType
+              schema:
+                type: string
+              required: true
+              description: Photo type
+            carrierCode:
+              in: path
+              name: carrierCode
+              schema:
+                type: string
+              required: true
+              description: Carrier code
+            statType:
+              in: path
+              name: statType
+              schema:
+                type: string
+              required: true
+              description: StatTypeEnum
+      StageName: !Ref StageName
+      Domain:
+        DomainName: !Sub "${StageName}.api.bootworks.pointinside.com"
+        CertificateArn: !Ref CertificateArn
+        Route53:
+          HostedZoneId: !Ref HostedZoneId
+      AccessLogSettings:
+        DestinationArn: !GetAtt AccessLogs.Arn
+        Format: '{"timestamp":"$context.requestTime","env":"$context.stage","request":{"id":"$context.requestId","ip":"$context.identity.sourceIp","protocol":"$context.protocol","httpMethod":"$context.httpMethod","httpPath":"$context.path"},"auth":{"jwt":{"sub":"$context.authorizer.claims.sub"},"error":"$context.authorizer.error"},"lambda":{"svcStatus":"$context.integration.integrationStatus","fnStatus":"$context.integration.status","latency":"$context.integration.latency","error":"$context.integration.error"},"response":{"status":"$context.status","length":"$context.responseLength","latency":"$context.responseLatency"}}'
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 200
+      FailOnWarnings: True
+      # Allow GET requests that contain Content-Type headers from any origin for 600s before
+      # OPTION needs to be requested again.
+      # https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api-cors.html
+      CorsConfiguration:
+        AllowOrigins:
+          - "https://*"
+          - "http://*"
+        AllowHeaders:
+          - "*"
+        AllowMethods:
+          - GET
+          - POST
+          - PUT
+          - DELETE
+        MaxAge: 600
+        AllowCredentials: True
+      Auth:
+        Authorizers:
+          AuthZeroAuthorizer:
+            JwtConfiguration:
+              issuer: "https://point-inside.us.auth0.com/"
+              audience:
+                - "https://bootworks-api.pointinside.com"
+                - "https://api.bootworks.pointinside.com"
+            IdentitySource: "$request.header.Authorization"
+
+  # Log resource for gateway?
+  AccessLogs:
+    Type: AWS::Logs::LogGroup
+
+  # Forward AccessLogs to Datadog
+  AccessLogsToDatadog:
+    Type: "AWS::Logs::SubscriptionFilter"
+    Properties:
+      DestinationArn: !Ref DatadogForwarderArn
+      LogGroupName: !Ref AccessLogs
+      FilterPattern: ""
+
+Outputs:
+  HttpApiUrl:
+    Description: URL of your API endpoint
+    Value: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${StageName}/"
+  HttpApiId:
+    Description: Api id of HttpApi
+    Value:
+      Ref: HttpApi
