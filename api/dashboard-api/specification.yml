@@ -1,0 +1,385 @@
+swagger: '2.0'
+info:
+  description: 'Endpoint to load dashboard items'
+  title: 'Dashboard endpoint'
+  version: '1.0.0'
+host: 'localhost'
+schemes:
+  - 'http'
+basePath: '/api/dashboard/v1'
+paths:
+  /totals:
+    get:
+      summary: 'Retrieves the number of total documents per drawer'
+      operationId: 'getTotals'
+      consumes:
+        - 'application/json'
+      produces:
+        - 'application/json'
+      responses:
+        200:
+          description: 'Success'
+          schema:
+            $ref: '#/definitions/Totals'
+        500:
+          description: 'Server error'
+
+  /readyForCustomer:
+    get:
+      summary: 'Retrieves the orders ready for customer pickup and sets the repo'
+      operationId: 'getOrdersReadyForCustomer'
+      consumes:
+        - 'application/json'
+      produces:
+        - 'application/json'
+      responses:
+        200:
+          description: 'Success'
+          schema:
+            $ref: '#/definitions/PagedResponse'
+        500:
+          description: 'Server error'
+
+  /filterByQuickSearch/{id}:
+    get:
+      summary: 'Returns a page of documents based on search ID'
+      operationId: 'filterByQuickSearch'
+      consumes:
+        - 'application/json'
+      produces:
+        - 'application/json'
+      parameters:
+        - in: 'path'
+          name: 'id'
+          type: 'string'
+          description: 'The unique search identifier returned from the original search request'
+          required: true
+        - in: 'query'
+          name: 'filter'
+          description: 'The item to filter documents by'
+          required: true
+          type: 'string'
+      responses:
+        200:
+          description: 'Success'
+          schema:
+            $ref: '#/definitions/SearchResults'
+        404:
+          description: 'No results found for search item.'
+        400:
+          description: 'Bad request'
+        500:
+          description: 'Server error'
+
+  /search/dd/{id}:
+    get:
+      summary: 'Returns a page of documents based on search ID'
+      operationId: 'getDocumentsPage'
+      consumes:
+        - 'application/json'
+      produces:
+        - 'application/json'
+      parameters:
+        - in: 'path'
+          name: 'id'
+          type: 'string'
+          description: 'The unique search identifier returned from the original search request'
+          required: true
+        - in: 'query'
+          name: 'offset'
+          description: 'The location in the search results to start slicing data for the customer page of data'
+          required: true
+          type: 'number'
+        - in: 'query'
+          name: 'limit'
+          description: 'The number of search results to return for this page (defaults to 15)'
+          type: 'number'
+        - in: 'query'
+          name: 'idx'
+          description: 'Retrieve documents by type-based integer'
+          type: 'number'
+      responses:
+        200:
+          description: 'Success'
+          schema:
+            $ref: '#/definitions/PagedResponse'
+        404:
+          description: 'No Search request by ID was found.'
+        400:
+          description: 'Bad request'
+        500:
+          description: 'Server error'
+
+  /search/rfp/{id}:
+    get:
+      summary: 'Returns a page of orders ready for customer pickup based on search ID'
+      operationId: 'getReadyForCustomerPage'
+      consumes:
+        - 'application/json'
+      produces:
+        - 'application/json'
+      parameters:
+        - in: 'path'
+          name: 'id'
+          type: 'string'
+          description: 'The unique search identifier returned from the original search request'
+          required: true
+        - in: 'query'
+          name: 'offset'
+          description: 'The location in the search results to start slicing data for the customer page of data'
+          required: true
+          type: 'number'
+        - in: 'query'
+          name: 'limit'
+          description: 'The number of search results to return for this page (defaults to 10)'
+          type: 'number'
+      responses:
+        200:
+          description: 'Success'
+          schema:
+            $ref: '#/definitions/PagedResponse'
+        404:
+          description: 'No Search request by ID was found.'
+        400:
+          description: 'Bad request'
+        500:
+          description: 'Server error'
+  /kpi:
+    get:
+      summary: 'Retrieves the KPI data and brand logo for the current store'
+      operationId: 'getKpi'
+      consumes:
+        - 'application/json'
+      produces:
+        - 'application/json'
+      responses:
+        200:
+          description: 'Success'
+          schema:
+            $ref: '#/definitions/Kpi'
+        500:
+          description: 'Server error'
+
+definitions:
+  Totals:
+    type: 'object'
+    description: 'Total documents in each drawer'
+    properties:
+      total:
+        description: 'Total number of documents'
+        type: 'number'
+        required: true
+        example: 100
+      workTotal:
+        description: 'Total number of work documents'
+        type: 'number'
+        required: true
+        example: 50
+      quoteTotal:
+        description: 'Total number of quote documents'
+        type: 'number'
+        required: true
+        example: 50
+
+  SearchResults:
+    type: 'object'
+    description: 'Documents drawer filter by quick search results'
+    properties:
+      all:
+        title: 'Documents drawer search'
+        description: 'The search results for the all drawer'
+        required: true
+        type: 'array'
+        items:
+          $ref: '#/definitions/Document'
+      work:
+        title: 'Documents drawer work order search'
+        description: 'The search results for the work drawer'
+        required: true
+        type: 'array'
+        items:
+          $ref: '#/definitions/Document'
+      quote:
+        title: 'Documents drawer quote order search'
+        description: 'The search results for the quote drawer'
+        required: true
+        type: 'array'
+        items:
+          $ref: '#/definitions/Document'
+
+  PagedResponse:
+    type: 'object'
+    description: 'A generic page of data items'
+    properties:
+      items:
+        title: 'The page of retrieved items'
+        description: 'The array of items for this page'
+        required: true
+        type: 'array'
+        items:
+          $ref: '#/definitions/Document'
+      id:
+        title: 'Search ID'
+        description: 'Subsequent requests for pages by unique ID'
+        type: 'string'
+        required: true
+      offset:
+        title: 'Search Offset'
+        description: 'Where in the search response to start returning the list of documents'
+        type: 'number'
+      morePages:
+        title: 'More Pages'
+        description: 'A flag indicating whether or not there are more pages of documents'
+        type: 'boolean'
+      limit:
+        title: 'Search limit'
+        description: 'The number of documents returned per page (default is 15)'
+        type: 'number'
+      total:
+        title: 'Total'
+        description: 'Total documents available in documents drawer'
+        type: 'number'
+
+  Document:
+    type: 'object'
+    description: 'Documents drawer list'
+    required:
+      ['customer', 'orderStatus', 'vehicle', 'orderID', 'hasPayment']
+    properties:
+      aiStatus:
+        title: 'AI Status'
+        description: 'The AI status for the order.  NOTE: This is needed to properly open an order to the AI Flow from the sidebar'
+        type: 'string'
+        example: 'Pending'
+      customer:
+        $ref: '#/definitions/Customer'
+      customerStatus:
+        title: 'Status'
+        description: 'The status of the customer'
+        type: 'string'
+        example: 'Waiting'
+      vehicle:
+        $ref: '#/definitions/Vehicle'
+      orderID:
+        title: 'Order Id'
+        description: 'Represents a Backend Order Id'
+        type: 'string'
+        example: '0000025121'
+      hasPayment:
+        title: 'Payment Applied'
+        description: 'Specifies whether a payment has been applied to the work order'
+        type: 'boolean'
+        example: false
+        required: true
+      isCarryout:
+        title: 'Carryout'
+        description: 'Specifies whether or not the order is carryout'
+        type: 'boolean'
+        example: true
+        required: true
+      orderStatus:
+        title: 'Status'
+        description: 'The status of the order'
+        type: 'string'
+        example: 'Quoting'
+      orderType:
+        title: 'Order Type'
+        description: 'The type of order'
+        type: 'string'
+        example: 'WalkIn'
+      paymentStatus:
+        title: 'Payment Status'
+        description: 'Specifies if a full or partial or no payment has been made on the work order'
+        type: 'string'
+        example: 'FullPayment'
+      sourceSystem:
+        title: 'Source System'
+        description: 'Source system'
+        type: 'string'
+        example: ''
+      documentFilterType:
+        type: 'string'
+        enum:
+          - ALL
+          - WORK
+          - QUOTE
+
+  Customer:
+    type: 'object'
+    description: 'Represents the the customer associated with a Document'
+    required: ['firstName', 'lastName', 'phone']
+    properties:
+      firstName:
+        title: 'Customer First Name'
+        description: 'First name of the customer'
+        type: 'string'
+        example: 'Johnathan'
+      lastName:
+        title: 'Customer Last Name'
+        description: 'Last name of the customer'
+        type: 'string'
+        example: 'Doe'
+      phone:
+        title: 'Customer Phone'
+        description: "Represents the customer's preferred contact phone number"
+        type: 'string'
+        example: '214-123-5555'
+
+  Vehicle:
+    type: 'object'
+    description: 'Represents the the vehicle associated with a Document'
+    required: ['name']
+    properties:
+      name:
+        title: 'Vehicle Name'
+        description: "The parts of a vehicle configuration combined into\na short text value suitable for display to a user"
+        type: 'string'
+        example: "'19 Ford Edge Limited"
+
+  Kpi:
+    type: 'object'
+    description: 'KPI data and brand logo for the current store'
+    properties:
+      brandLogo:
+        title: 'Brand logo'
+        description: 'The brand logo enumeration for the store (TK | NTB | BIG_O | MERCHANTS | TK_EXPRESS)'
+        required: true
+        type: 'string'
+        enum: ['TK', 'NTB', 'BIG_O', 'MERCHANTS', 'TK_EXPRESS']
+        example: 'TK'
+      budget:
+        title: 'Budget'
+        description: 'The budgeted car count'
+        required: true
+        type: 'string'
+        example: '1'
+      completed:
+        title: 'Completed'
+        description: 'The completed car count'
+        required: true
+        type: 'string'
+        example: '1'
+      remaining:
+        title: 'Remaining'
+        description: 'The remaining car count'
+        required: true
+        type: 'string'
+        example: '1'
+      average:
+        title: 'Average'
+        description: 'The average completion duration'
+        required: true
+        type: 'string'
+        example: '01:49:14'
+      quickest:
+        title: 'Quickest'
+        description: 'The quickest completion duration'
+        required: true
+        type: 'string'
+        example: '00:06:55'
+      rank:
+        title: 'Rank'
+        description: "The store's rank"
+        required: true
+        type: 'string'
+        example: '11'
