@@ -1,5 +1,5 @@
 # code-examples
-React-TypeScript, PHP, SQL programming done by Daneita. <br/>
+React, TypeScript, PHP, SQL programming done by Daneita. <br/>
 <br/>
 Includes:
 - client: Client development, styling, component and unit tests.
